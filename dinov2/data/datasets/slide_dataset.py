@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-#
 # This source code is licensed under the Apache License, Version 2.0
 # found in the LICENSE file in the root directory of this source tree.
 
@@ -24,8 +23,6 @@ class SlideDataset(ExtendedVisionDataset):
 
     def get_all(self, index):
         parts = self.image_files[index].split(" ")
-        if len(parts) != 6:
-            raise ValueError(f"Expected 6 fields per line, got {len(parts)}")
         path = parts[0]
         image = OpenSlide(path)
         return image, path
@@ -33,14 +30,10 @@ class SlideDataset(ExtendedVisionDataset):
     def __getitem__(self, index: int) -> Tuple[Any, Any]:
         path = self.image_files[index]
         parts = path.split(" ")
-        if len(parts) != 6:
-            raise ValueError(f"Expected 6 fields per line, got {len(parts)}")
-        path, x, y, level, mpp_x, mpp_y = parts
+        path, x, y, level = parts
         x = int(x)
         y = int(y)
         level = int(level)
-        mpp_x = float(mpp_x)
-        mpp_y = float(mpp_y)
 
         image = OpenSlide(path)
 

@@ -14,6 +14,7 @@ from io import BytesIO
 from pathlib import Path
 import gc
 import contextlib
+import glob
 
 from fvcore.common.checkpoint import PeriodicCheckpointer
 import torch
@@ -29,6 +30,8 @@ from dinov2.train.ssl_meta_arch import SSLMetaArch
 from dinov2.models import build_model_from_cfg
 from datasets import IterableDatasetDict, load_dataset, DownloadConfig
 from PIL import Image, ImageOps
+import h5py
+import numpy as np
 import torch.utils.data
 from torchvision import transforms
 from torchvision.datasets import folder
@@ -53,12 +56,9 @@ logger = logging.getLogger("dinov2")
 import wandb
 
 RUN_SCRIPT = os.environ.get("DINOV2_RUN_SCRIPT", "")
-USE_ABLATION_AUG = RUN_SCRIPT.endswith("run_ablation.sh")
-if USE_ABLATION_AUG:
-    from dinov2.data.augmentations_ablation import DataAugmentationDINO as DataAugmentationDINO
-    AUGMENTATION_FILE = Path(__file__).resolve().parents[1] / "data" / "augmentations_ablation.py"
-else:
-    AUGMENTATION_FILE = Path(__file__).resolve().parents[1] / "data" / "augmentations.py"
+AUGMENTATION_FILE = Path(__file__).resolve().parents[1] / "data" / "augmentations.py"
+VISION_TRANSFORMER_FILE = Path(__file__).resolve().parents[1] / "models" / "vision_transformer.py"
+SSL_META_ARCH = Path(__file__).resolve().parents[1] / "train" / "ssl_meta_arch.py"
 
 def _build_streaming_dataset(
     dataset_path: str,
@@ -208,17 +208,18 @@ def _resolve_torchhub_name(cfg):
     return f"dinov2_{hub_arch}{cfg.student.patch_size}{reg_suffix}"
 
 
-def _load_pretrained_backbone(cfg, model):
-    def _iter_vit_blocks(backbone):
-        if backbone.chunked_blocks:
-            for chunk in backbone.blocks:
-                for blk in chunk:
-                    if not isinstance(blk, torch.nn.Identity):
-                        yield blk
-        else:
-            for blk in backbone.blocks:
-                yield blk
+def _iter_vit_blocks(backbone):
+    if backbone.chunked_blocks:
+        for chunk in backbone.blocks:
+            for blk in chunk:
+                if not isinstance(blk, torch.nn.Identity):
+                    yield blk
+    else:
+        for blk in backbone.blocks:
+            yield blk
 
+
+def _load_pretrained_backbone(cfg, model):
     def _mlp_kind(block):
         if hasattr(block.mlp, "fc1"):
             return "mlp"
@@ -289,6 +290,27 @@ def _load_pretrained_backbone(cfg, model):
         student_backbone.norm.bias.copy_(model_pretrained.norm.bias)
 
 
+def _freeze_student_backbone_except_last_n(cfg, model):
+    n_unfrozen = cfg.train.unfreeze_last_n_blocks
+    student_backbone = model.student.backbone
+    blocks = list(_iter_vit_blocks(student_backbone))
+    total_blocks = len(blocks)
+    if n_unfrozen < 1 or n_unfrozen > total_blocks:
+        n_unfrozen = total_blocks
+        print("cfg.train.unfreeze_last_n_blocks not set; setting to total blocks which is {total_blocks}")
+    freeze_until = total_blocks - n_unfrozen
+    if freeze_until == 0:
+        return
+    for p in student_backbone.parameters():
+        p.requires_grad = False
+    for blk in blocks[freeze_until:]:
+        for p in blk.parameters():
+            p.requires_grad = True
+    for p in student_backbone.norm.parameters():
+        p.requires_grad = True
+    logger.info("Froze %d/%d student backbone blocks (trainable blocks: %d)", freeze_until, total_blocks, n_unfrozen)
+
+
 def do_test(cfg, model, iteration): # save teacher checkpoint (used for eval only)
     # All ranks participate in FSDP state_dict() even with rank0_only=True
     is_main = distributed.is_main_process()
@@ -332,22 +354,32 @@ def do_test(cfg, model, iteration): # save teacher checkpoint (used for eval onl
     if not is_main:
         return
 
-    repo_root = Path(__file__).resolve().parents[2]
-    bach_root = str(cfg.evaluation.bach_root)
-    if not os.path.isdir(bach_root):
-        logger.info("Skipping BACH eval; dataset path missing: %s", bach_root)
-        return
-
     teacher, _ = build_model_from_cfg(cfg, only_teacher=True)
     teacher_state = torch.load(teacher_ckp_path, map_location="cpu")["teacher"]
     teacher_state = {k.replace("module.", ""): v for k, v in teacher_state.items()}
     teacher_state = {k.replace("backbone.", ""): v for k, v in teacher_state.items() if k.startswith("backbone.")}
     load_msg = teacher.load_state_dict(teacher_state, strict=False)
-    logger.info("Loaded teacher for BACH eval with msg: %s", load_msg)
+    logger.info("Loaded teacher for downstream eval with msg: %s", load_msg)
     teacher = teacher.cuda()
     teacher.eval()
     teacher.requires_grad_(False)
     device = next(teacher.parameters()).device
+    step = iteration if isinstance(iteration, int) else int(str(iteration).split("_")[-1])
+
+    def _resolve_eval_root(name, root_value):
+        root_str = "" if root_value is None else str(root_value)
+        if not root_str:
+            logger.info("Skipping %s eval because %s_root is not set", name, name.lower())
+            return None
+        root_path = os.path.abspath(os.path.expanduser(root_str))
+        if not os.path.isdir(root_path):
+            logger.info("Skipping %s eval; dataset path missing: %s", name, root_path)
+            return None
+        return root_path
+
+    bach_root = _resolve_eval_root("BACH", cfg.evaluation.bach_root)
+    breakhis_root = _resolve_eval_root("BreakHis", cfg.evaluation.breakhis_root)
+    pcam_root = _resolve_eval_root("PCam", cfg.evaluation.pcam_root)
 
     class _ResizeAndCrop(transforms.Compose):
         def __init__(self, size=224, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
@@ -359,73 +391,17 @@ def do_test(cfg, model, iteration): # save teacher checkpoint (used for eval onl
             ]
             super().__init__(ops)
 
-    _BACH_TRAIN_INDEX_RANGES = [
-        (0, 41),
-        (59, 60),
-        (90, 139),
-        (169, 240),
-        (258, 260),
-        (273, 345),
-        (368, 400),
-    ]
-    _BACH_VAL_INDEX_RANGES = [
-        (41, 59),
-        (60, 90),
-        (139, 169),
-        (240, 258),
-        (260, 273),
-        (345, 368),
-    ]
-    _BACH_CLASS_TO_IDX = {"Benign": 0, "InSitu": 1, "Invasive": 2, "Normal": 3}
-
-    class _BACHDataset(torch.utils.data.Dataset):
-        def __init__(self, root, split, transform):
-            self.root = os.path.abspath(os.path.expanduser(root))
-            self.split = split
-            self.transform = transform
-            dataset_path = os.path.join(self.root, "ICIAR2018_BACH_Challenge", "Photos")
-            self.samples = folder.make_dataset(
-                directory=dataset_path,
-                class_to_idx=_BACH_CLASS_TO_IDX,
-                extensions=(".tif",),
-            )
-            if len(self.samples) == 0:
-                raise RuntimeError(f"No BACH images found in {dataset_path}")
-            if split == "train":
-                index_ranges = _BACH_TRAIN_INDEX_RANGES
-            elif split == "val":
-                index_ranges = _BACH_VAL_INDEX_RANGES
-            else:
-                raise ValueError("Invalid BACH split. Use 'train' or 'val'.")
-            indices = []
-            for start, end in index_ranges:
-                indices.extend(range(start, end))
-            self.indices = indices
-
-        def __len__(self):
-            return len(self.indices)
-
-        def __getitem__(self, idx):
-            image_path, target = self.samples[self.indices[idx]]
-            image = Image.open(image_path).convert("RGB")
-            if self.transform is not None:
-                image = self.transform(image)
-            target_tensor = torch.tensor(target, dtype=torch.long)
-            return image, target_tensor
-
     transform = _ResizeAndCrop(
         size=224,
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225],
     )
 
-    train_ds = _BACHDataset(root=str(bach_root), split="train", transform=transform)
-    val_ds = _BACHDataset(root=str(bach_root), split="val", transform=transform)
-
     predict_batch_size = 64
     num_workers = 4
+    train_batch_size = 256
 
-    def _compute_embeddings(dataset):
+    def _compute_embeddings(dataset, *, to_cpu=False):
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=predict_batch_size,
@@ -438,74 +414,301 @@ def do_test(cfg, model, iteration): # save teacher checkpoint (used for eval onl
         with torch.no_grad():
             for images, labels in loader:
                 images = images.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
                 out = teacher(images, is_training=True)
-                cls = out["x_norm_clstoken"]
-                feats.append(cls)
-                targets.append(labels)
+                cls = out["x_norm_clstoken"].float()
+                if to_cpu:
+                    feats.append(cls.cpu())
+                    targets.append(labels.cpu())
+                else:
+                    labels = labels.to(device, non_blocking=True)
+                    feats.append(cls)
+                    targets.append(labels)
         feats = torch.cat(feats, dim=0)
         targets = torch.cat(targets, dim=0)
         return feats, targets
 
-    train_feats, train_targets = _compute_embeddings(train_ds)
-    val_feats, val_targets = _compute_embeddings(val_ds)
+    if bach_root is not None:
+        _BACH_TRAIN_INDEX_RANGES = [
+            (0, 41),
+            (59, 60),
+            (90, 139),
+            (169, 240),
+            (258, 260),
+            (273, 345),
+            (368, 400),
+        ]
+        _BACH_VAL_INDEX_RANGES = [
+            (41, 59),
+            (60, 90),
+            (139, 169),
+            (240, 258),
+            (260, 273),
+            (345, 368),
+        ]
+        _BACH_CLASS_TO_IDX = {"Benign": 0, "InSitu": 1, "Invasive": 2, "Normal": 3}
 
-    in_features = train_feats.shape[-1]
-    num_classes = 4
-    head = torch.nn.Linear(in_features, num_classes, bias=True).to(device)
-    criterion = torch.nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.AdamW(head.parameters(), lr=3e-4, weight_decay=1e-2)
+        class _BACHDataset(torch.utils.data.Dataset):
+            def __init__(self, root, split, transform):
+                self.root = os.path.abspath(os.path.expanduser(root))
+                self.split = split
+                self.transform = transform
+                dataset_path = os.path.join(self.root, "ICIAR2018_BACH_Challenge", "Photos")
+                self.samples = folder.make_dataset(
+                    directory=dataset_path,
+                    class_to_idx=_BACH_CLASS_TO_IDX,
+                    extensions=(".tif",),
+                )
+                if len(self.samples) == 0:
+                    raise RuntimeError(f"No BACH images found in {dataset_path}")
+                if split == "train":
+                    index_ranges = _BACH_TRAIN_INDEX_RANGES
+                elif split == "val":
+                    index_ranges = _BACH_VAL_INDEX_RANGES
+                else:
+                    raise ValueError("Invalid BACH split. Use 'train' or 'val'.")
+                indices = []
+                for start, end in index_ranges:
+                    indices.extend(range(start, end))
+                self.indices = indices
 
-    train_dataset = torch.utils.data.TensorDataset(train_feats, train_targets)
-    train_batch_size = 256
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=train_batch_size,
-        shuffle=True,
-        drop_last=False,
-    )
+            def __len__(self):
+                return len(self.indices)
 
-    val_dataset = torch.utils.data.TensorDataset(val_feats, val_targets)
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=train_batch_size,
-        shuffle=False,
-        drop_last=False,
-    )
+            def __getitem__(self, idx):
+                image_path, target = self.samples[self.indices[idx]]
+                image = Image.open(image_path).convert("RGB")
+                if self.transform is not None:
+                    image = self.transform(image)
+                target_tensor = torch.tensor(target, dtype=torch.long)
+                return image, target_tensor
 
-    def _eval_head():
-        head.eval()
-        all_preds = []
-        all_targets = []
-        with torch.no_grad():
-            for feats_batch, targets_batch in val_loader:
-                feats_batch = feats_batch.to(device, non_blocking=True)
-                logits = head(feats_batch)
-                preds = logits.argmax(dim=1).cpu()
-                all_preds.append(preds)
-                all_targets.append(targets_batch.cpu())
-        preds = torch.cat(all_preds, dim=0)
-        targets = torch.cat(all_targets, dim=0)
-        plain_acc = float((preds == targets).float().mean().item())
-        conf = torch.zeros(num_classes, num_classes, dtype=torch.long)
-        indices = targets * num_classes + preds
-        bincount = torch.bincount(indices, minlength=num_classes * num_classes)
-        conf = bincount.view(num_classes, num_classes)
-        per_class = conf.diag().float() / conf.sum(dim=1).clamp_min(1)
-        balanced_acc = float(per_class.mean().item())
+        train_ds = _BACHDataset(root=bach_root, split="train", transform=transform)
+        val_ds = _BACHDataset(root=bach_root, split="val", transform=transform)
+
+        train_feats, train_targets = _compute_embeddings(train_ds)
+        val_feats, val_targets = _compute_embeddings(val_ds)
+
+        in_features = train_feats.shape[-1]
+        num_classes = 4
+        head = torch.nn.Linear(in_features, num_classes, bias=True).to(device)
+        criterion = torch.nn.CrossEntropyLoss().to(device)
+        optimizer = torch.optim.AdamW(head.parameters(), lr=3e-4, weight_decay=1e-2)
+
+        train_dataset = torch.utils.data.TensorDataset(train_feats, train_targets)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=train_batch_size,
+            shuffle=True,
+            drop_last=False,
+        )
+
+        val_dataset = torch.utils.data.TensorDataset(val_feats, val_targets)
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=train_batch_size,
+            shuffle=False,
+            drop_last=False,
+        )
+
+        def _eval_head():
+            head.eval()
+            all_preds = []
+            all_targets = []
+            with torch.no_grad():
+                for feats_batch, targets_batch in val_loader:
+                    feats_batch = feats_batch.to(device, non_blocking=True)
+                    logits = head(feats_batch)
+                    preds = logits.argmax(dim=1).cpu()
+                    all_preds.append(preds)
+                    all_targets.append(targets_batch.cpu())
+            preds = torch.cat(all_preds, dim=0)
+            targets = torch.cat(all_targets, dim=0)
+            plain_acc = float((preds == targets).float().mean().item())
+            conf = torch.zeros(num_classes, num_classes, dtype=torch.long)
+            indices = targets * num_classes + preds
+            bincount = torch.bincount(indices, minlength=num_classes * num_classes)
+            conf = bincount.view(num_classes, num_classes)
+            per_class = conf.diag().float() / conf.sum(dim=1).clamp_min(1)
+            balanced_acc = float(per_class.mean().item())
+            head.train()
+            return plain_acc, balanced_acc
+
+        max_steps = 12500  # eva uses 12500 steps with patience-based early stopping
+        eval_every = 250
+        patience = 1250
+        steps = 0
+        best_plain = -1.0
+        best_balanced = -1.0
+        best_state = None
+        steps_since_improve = 0
         head.train()
-        return plain_acc, balanced_acc
+        with tqdm(total=max_steps) as pbar:
+            while steps < max_steps:
+                for feats_batch, targets_batch in train_loader:
+                    feats_batch = feats_batch.to(device, non_blocking=True)
+                    targets_batch = targets_batch.to(device, non_blocking=True)
+                    logits = head(feats_batch)
+                    loss = criterion(logits, targets_batch)
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    optimizer.step()
+                    steps += 1
+                    pbar.update(1)
+                    if steps % eval_every == 0 or steps >= max_steps:
+                        plain_acc, balanced_acc = _eval_head()
+                        if plain_acc > best_plain:
+                            best_plain = plain_acc
+                            best_balanced = balanced_acc
+                            best_state = {k: v.cpu() for k, v in head.state_dict().items()}
+                            steps_since_improve = 0
+                        else:
+                            steps_since_improve += eval_every
+                        if steps_since_improve >= patience:
+                            steps = max_steps
+                            break
+                    if steps >= max_steps:
+                        break
 
-    max_steps = 12500  # eva uses 12500 steps with patience-based early stopping
-    eval_every = 250
-    patience = 1250
-    steps = 0
-    best_plain = -1.0
-    best_balanced = -1.0
-    best_state = None
-    steps_since_improve = 0
-    head.train()
-    with tqdm(total=max_steps) as pbar:
+        if best_state is not None:
+            head.load_state_dict(best_state)
+            bach_acc_plain, bach_acc_balanced = best_plain, best_balanced
+        else:
+            bach_acc_plain, bach_acc_balanced = _eval_head()
+
+        logger.info(
+            "BACH val accuracy (linear probe): plain=%.4f balanced=%.4f",
+            bach_acc_plain,
+            bach_acc_balanced,
+        )
+
+        if wandb.run is not None and distributed.is_main_process():
+            wandb.log(
+                {
+                    "val/BACH_BALANCED_ACCURACY": bach_acc_balanced,
+                    "val/BACH_MULTICLASS_ACCURACY": bach_acc_plain,
+                },
+                step=step,
+            )
+
+    if breakhis_root is not None:
+        _BREAKHIS_VAL_PATIENT_IDS = {
+            "18842D",
+            "19979",
+            "15275",
+            "15792",
+            "16875",
+            "3909",
+            "5287",
+            "16716",
+            "2773",
+            "5695",
+            "16184CD",
+            "23060CD",
+            "21998CD",
+            "21998EF",
+        }
+        _BREAKHIS_CLASSES = ["TA", "MC", "F", "DC"]
+        _BREAKHIS_CLASS_TO_IDX = {label: index for index, label in enumerate(_BREAKHIS_CLASSES)}
+
+        class _BreakHisDataset(torch.utils.data.Dataset):
+            def __init__(self, root, split, transform):
+                self.root = os.path.abspath(os.path.expanduser(root))
+                self.split = split
+                self.transform = transform
+                dataset_path = os.path.join(self.root, "BreaKHis_v1", "histology_slides")
+                pattern = os.path.join(dataset_path, "**", "40X", "*.png")
+                self.image_files = sorted(glob.glob(pattern, recursive=True))
+                if len(self.image_files) == 0:
+                    raise RuntimeError(f"No BreakHis images found in {dataset_path}")
+                indices = []
+                for idx, image_file in enumerate(self.image_files):
+                    class_name = os.path.basename(image_file).split("-")[0].split("_")[-1]
+                    if class_name not in _BREAKHIS_CLASS_TO_IDX:
+                        continue
+                    patient_id = os.path.basename(image_file).split("-")[2]
+                    if split == "train":
+                        if patient_id not in _BREAKHIS_VAL_PATIENT_IDS:
+                            indices.append(idx)
+                    elif split == "val":
+                        if patient_id in _BREAKHIS_VAL_PATIENT_IDS:
+                            indices.append(idx)
+                    else:
+                        raise ValueError("Invalid BreakHis split. Use 'train' or 'val'.")
+                self.indices = indices
+
+            def __len__(self):
+                return len(self.indices)
+
+            def __getitem__(self, idx):
+                image_path = self.image_files[self.indices[idx]]
+                image = Image.open(image_path).convert("RGB")
+                if self.transform is not None:
+                    image = self.transform(image)
+                class_name = os.path.basename(image_path).split("-")[0].split("_")[-1]
+                target = _BREAKHIS_CLASS_TO_IDX[class_name]
+                target_tensor = torch.tensor(target, dtype=torch.long)
+                return image, target_tensor
+
+        train_ds = _BreakHisDataset(root=breakhis_root, split="train", transform=transform)
+        val_ds = _BreakHisDataset(root=breakhis_root, split="val", transform=transform)
+
+        train_feats, train_targets = _compute_embeddings(train_ds)
+        val_feats, val_targets = _compute_embeddings(val_ds)
+
+        in_features = train_feats.shape[-1]
+        num_classes = 4
+        head = torch.nn.Linear(in_features, num_classes, bias=True).to(device)
+        criterion = torch.nn.CrossEntropyLoss().to(device)
+        optimizer = torch.optim.AdamW(head.parameters(), lr=3e-4, weight_decay=1e-2)
+
+        train_dataset = torch.utils.data.TensorDataset(train_feats, train_targets)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=train_batch_size,
+            shuffle=True,
+            drop_last=False,
+        )
+
+        val_dataset = torch.utils.data.TensorDataset(val_feats, val_targets)
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=train_batch_size,
+            shuffle=False,
+            drop_last=False,
+        )
+
+        def _eval_head():
+            head.eval()
+            all_preds = []
+            all_targets = []
+            with torch.no_grad():
+                for feats_batch, targets_batch in val_loader:
+                    feats_batch = feats_batch.to(device, non_blocking=True)
+                    logits = head(feats_batch)
+                    preds = logits.argmax(dim=1).cpu()
+                    all_preds.append(preds)
+                    all_targets.append(targets_batch.cpu())
+            preds = torch.cat(all_preds, dim=0)
+            targets = torch.cat(all_targets, dim=0)
+            plain_acc = float((preds == targets).float().mean().item())
+            conf = torch.zeros(num_classes, num_classes, dtype=torch.long)
+            indices = targets * num_classes + preds
+            bincount = torch.bincount(indices, minlength=num_classes * num_classes)
+            conf = bincount.view(num_classes, num_classes)
+            per_class = conf.diag().float() / conf.sum(dim=1).clamp_min(1)
+            balanced_acc = float(per_class.mean().item())
+            head.train()
+            return plain_acc, balanced_acc
+
+        max_steps = 12500
+        eval_every = 250
+        patience = 500
+        steps = 0
+        best_plain = -1.0
+        best_balanced = -1.0
+        best_state = None
+        steps_since_improve = 0
+        head.train()
         while steps < max_steps:
             for feats_batch, targets_batch in train_loader:
                 feats_batch = feats_batch.to(device, non_blocking=True)
@@ -516,7 +719,6 @@ def do_test(cfg, model, iteration): # save teacher checkpoint (used for eval onl
                 loss.backward()
                 optimizer.step()
                 steps += 1
-                pbar.update(1)
                 if steps % eval_every == 0 or steps >= max_steps:
                     plain_acc, balanced_acc = _eval_head()
                     if plain_acc > best_plain:
@@ -532,36 +734,199 @@ def do_test(cfg, model, iteration): # save teacher checkpoint (used for eval onl
                 if steps >= max_steps:
                     break
 
-    if best_state is not None:
-        head.load_state_dict(best_state)
-        bach_acc_plain, bach_acc_balanced = best_plain, best_balanced
-    else:
-        bach_acc_plain, bach_acc_balanced = _eval_head()
-
-    logger.info(
-        "BACH val accuracy (linear probe): plain=%.4f balanced=%.4f",
-        bach_acc_plain,
-        bach_acc_balanced,
-    )
-
-    if wandb.run is not None and distributed.is_main_process():
-        if isinstance(iteration, int):
-            step = iteration
+        if best_state is not None:
+            head.load_state_dict(best_state)
+            breakhis_acc_plain, breakhis_acc_balanced = best_plain, best_balanced
         else:
-            step = int(str(iteration).split("_")[-1])
-        wandb.log(
-            {
-                "val/BACH_BALANCED_ACCURACY": bach_acc_balanced,
-                "val/BACH_MULTICLASS_ACCURACY": bach_acc_plain,
-            },
-            step=step,
+            breakhis_acc_plain, breakhis_acc_balanced = _eval_head()
+
+        logger.info(
+            "BreakHis val accuracy (linear probe): plain=%.4f balanced=%.4f",
+            breakhis_acc_plain,
+            breakhis_acc_balanced,
         )
+
+        if wandb.run is not None and distributed.is_main_process():
+            wandb.log(
+                {
+                    "val/BREAKHIS_BALANCED_ACCURACY": breakhis_acc_balanced,
+                    "val/BREAKHIS_MULTICLASS_ACCURACY": breakhis_acc_plain,
+                },
+                step=step,
+            )
+
+    if pcam_root is not None:
+        def _pcam_h5_path(root, split, key):
+            split_suffix = "valid" if split == "val" else split
+            filename = f"camelyonpatch_level_2_split_{split_suffix}_{key}.h5"
+            return os.path.join(root, filename)
+
+        class _PCamDataset(torch.utils.data.Dataset):
+            def __init__(self, root, split, transform):
+                self.root = os.path.abspath(os.path.expanduser(root))
+                self.split = split
+                self.transform = transform
+                self.x_path = _pcam_h5_path(self.root, split, "x")
+                self.y_path = _pcam_h5_path(self.root, split, "y")
+                if not os.path.isfile(self.x_path) or not os.path.isfile(self.y_path):
+                    raise RuntimeError(f"Missing PatchCamelyon files for split {split} in {self.root}")
+                with h5py.File(self.y_path, "r") as file:
+                    self.length = len(file["y"])
+
+            def __len__(self):
+                return self.length
+
+            def __getitem__(self, idx):
+                with h5py.File(self.x_path, "r") as file:
+                    image_array = file["x"][idx]
+                with h5py.File(self.y_path, "r") as file:
+                    target = file["y"][idx].squeeze()
+                image = Image.fromarray(image_array)
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                if self.transform is not None:
+                    image = self.transform(image)
+                target_tensor = torch.tensor(float(target), dtype=torch.float32)
+                return image, target_tensor
+
+        train_ds = _PCamDataset(root=pcam_root, split="train", transform=transform)
+        test_ds = _PCamDataset(root=pcam_root, split="test", transform=transform)
+
+        num_samples_per_class = 10
+        with h5py.File(_pcam_h5_path(pcam_root, "train", "y"), "r") as file:
+            targets = file["y"][:].reshape(-1)
+        class_indices = {}
+        for idx, target in enumerate(targets):
+            class_idx = int(target)
+            if class_idx not in class_indices:
+                class_indices[class_idx] = []
+            class_indices[class_idx].append(idx)
+        for class_idx, indices in class_indices.items():
+            if len(indices) < num_samples_per_class:
+                raise ValueError(
+                    f"Class {class_idx} has only {len(indices)} samples, "
+                    f"which is less than the required {num_samples_per_class} samples."
+                )
+        rng = np.random.default_rng(42)
+        sampled_indices = []
+        for class_idx in class_indices:
+            sampled = rng.choice(
+                class_indices[class_idx],
+                size=num_samples_per_class,
+                replace=False,
+            ).tolist()
+            sampled_indices.extend(sampled)
+        rng.shuffle(sampled_indices)
+
+        train_subset = torch.utils.data.Subset(train_ds, sampled_indices)
+
+        train_feats, train_targets = _compute_embeddings(train_subset, to_cpu=True)
+        test_feats, test_targets = _compute_embeddings(test_ds, to_cpu=True)
+
+        in_features = train_feats.shape[-1]
+        head = torch.nn.Linear(in_features, 1, bias=True).to(device)
+        criterion = torch.nn.BCEWithLogitsLoss().to(device)
+        optimizer = torch.optim.AdamW(head.parameters(), lr=3e-4, weight_decay=1e-2)
+
+        train_dataset = torch.utils.data.TensorDataset(train_feats, train_targets)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=train_batch_size,
+            shuffle=False,
+            drop_last=False,
+        )
+
+        test_dataset = torch.utils.data.TensorDataset(test_feats, test_targets)
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset,
+            batch_size=train_batch_size,
+            shuffle=False,
+            drop_last=False,
+        )
+
+        def _eval_head(loader):
+            head.eval()
+            all_preds = []
+            all_targets = []
+            with torch.no_grad():
+                for feats_batch, targets_batch in loader:
+                    feats_batch = feats_batch.to(device, non_blocking=True)
+                    logits = head(feats_batch).squeeze(1)
+                    preds = (logits >= 0).to(torch.long).cpu()
+                    all_preds.append(preds)
+                    all_targets.append(targets_batch.to(torch.long).cpu())
+            preds = torch.cat(all_preds, dim=0)
+            targets = torch.cat(all_targets, dim=0)
+            plain_acc = float((preds == targets).float().mean().item())
+            num_classes = 2
+            indices = targets * num_classes + preds
+            bincount = torch.bincount(indices, minlength=num_classes * num_classes)
+            conf = bincount.view(num_classes, num_classes)
+            per_class = conf.diag().float() / conf.sum(dim=1).clamp_min(1)
+            balanced_acc = float(per_class.mean().item())
+            head.train()
+            return plain_acc, balanced_acc
+
+        max_steps = 12500
+        eval_every_epochs = 10
+        patience_evals = 125
+        eval_every = eval_every_epochs * len(train_loader)
+        patience = patience_evals * eval_every
+        steps = 0
+        best_balanced = -1.0
+        best_state = None
+        steps_since_improve = 0
+        head.train()
+        while steps < max_steps:
+            for feats_batch, targets_batch in train_loader:
+                feats_batch = feats_batch.to(device, non_blocking=True)
+                targets_batch = targets_batch.to(device, non_blocking=True)
+                logits = head(feats_batch).squeeze(1)
+                loss = criterion(logits, targets_batch)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                steps += 1
+                if steps % eval_every == 0 or steps >= max_steps:
+                    _, balanced_acc = _eval_head(test_loader)
+                    if balanced_acc > best_balanced:
+                        best_balanced = balanced_acc
+                        best_state = {k: v.cpu() for k, v in head.state_dict().items()}
+                        steps_since_improve = 0
+                    else:
+                        steps_since_improve += eval_every
+                    if steps_since_improve >= patience:
+                        steps = max_steps
+                        break
+                if steps >= max_steps:
+                    break
+
+        if best_state is not None:
+            head.load_state_dict(best_state)
+        test_plain, test_balanced = _eval_head(test_loader)
+
+        logger.info(
+            "PCam test accuracy (linear probe, 10-shot): plain=%.4f balanced=%.4f",
+            test_plain,
+            test_balanced,
+        )
+
+        if wandb.run is not None and distributed.is_main_process():
+            wandb.log(
+                {
+                    "val/PCAM_BINARY_ACCURACY": test_plain,
+                    "val/PCAM_BALANCED_ACCURACY": test_balanced,
+                },
+                step=step,
+            )
 
 
 def do_train(cfg, model, resume=False):
     model.train()
     inputs_dtype = torch.half
     fp16_scaler = model.fp16_scaler  # for mixed precision training
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
     if cfg.train.skip_checkpointer:
         print(f"\n\nSkipping FSDP checkpointer (cfg.train.skip_checkpointer={cfg.train.skip_checkpointer})\n\n")
 
@@ -588,18 +953,29 @@ def do_train(cfg, model, resume=False):
             run_id_path.write_text(run_id)
             resume_mode = "allow"
         run = wandb.init(
-            project="midnight-rep",
+            project="tcga-finetuning",
             config=OmegaConf.to_container(cfg),
             id=run_id,
             resume=resume_mode,
         )
         repo_root = Path(__file__).resolve().parents[2]
-        artifact = wandb.Artifact(name=f"run-source-{run.id}", type="code")
-        artifact.add_file(str(Path(__file__).resolve()))
-        artifact.add_file(str(AUGMENTATION_FILE))
-        artifact.add_file(str(os.environ.get("DINOV2_RUN_SCRIPT")))
-        artifact.add_file(str(Path(CONFIG_FILE_PATH)))
-        run.log_artifact(artifact)
+        files_to_save = [
+            Path(__file__).resolve(),
+            AUGMENTATION_FILE,
+            VISION_TRANSFORMER_FILE,
+            SSL_META_ARCH,
+            Path(CONFIG_FILE_PATH),
+        ]
+        run_script = os.environ.get("DINOV2_RUN_SCRIPT")
+        if run_script:
+            files_to_save.append(Path(run_script).resolve())
+        for src in files_to_save:
+            base_path = repo_root if src.is_relative_to(repo_root) else src.parent
+            run.save(str(src), base_path=str(base_path), policy="now")
+        logger.info("Trainable parameters: %s", trainable_params)
+        logger.info("Total parameters: %s", total_params)
+        print(f"Trainable parameters: {trainable_params}")
+        print(f"Total parameters: {total_params}")
 
     # checkpointer
     if not cfg.train.skip_checkpointer:
@@ -889,6 +1265,7 @@ def main(args):
     #Load model here from pretrained.
     if cfg.train.use_pretrained:
         _load_pretrained_backbone(cfg, model)
+    _freeze_student_backbone_except_last_n(cfg, model)
 
     model.prepare_for_distributed_training()
     logger.info("Model:\n{}".format(model))

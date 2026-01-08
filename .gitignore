@@ -23,7 +23,7 @@ _version.py
 .ipynb_checkpoints
 
 # Local data
-datasets
+slurms
 checkpoints
 wandb
 jobs
