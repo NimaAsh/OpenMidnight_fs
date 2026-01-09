@@ -69,6 +69,7 @@ train:
   OFFICIAL_EPOCH_LENGTH: 1250
   cache_dataset: true
   centering: "centering" # or "sinkhorn_knopp"
+  unfreeze_last_n_blocks: 40
 student:
   arch: vit_large
   patch_size: 16
