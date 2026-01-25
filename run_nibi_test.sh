@@ -28,9 +28,11 @@
 set -euo pipefail
 
 # =============================================================================
-# CONFIGURATION
+# CONFIGURATION - UPDATE THIS PATH FOR YOUR SETUP
 # =============================================================================
-CONFIG_FILE="./dinov2/configs/train/vits14_reg_ablations.yaml"
+# Use absolute path to avoid issues with sbatch working directory
+REPO_ROOT="/project/6012563/nima5/openmidnight_proj/OpenMidnight_fs"
+CONFIG_FILE="${REPO_ROOT}/dinov2/configs/train/vits14_reg_ablations.yaml"
 OUTPUT_DIR="$SCRATCH/openmidnight_output_test"
 VENV_DIR="$SCRATCH/openmidnight_venv"
 
@@ -42,10 +44,12 @@ echo "OpenMidnight Quick Test (Nibi)"
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Node: ${SLURMD_NODENAME}"
 echo "Start time: $(date)"
+echo "Working directory: ${REPO_ROOT}"
 echo "=============================================="
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Change to the repo directory (using absolute path set above)
 cd "${REPO_ROOT}"
+echo "Changed to: $(pwd)"
 
 # Load modules
 module purge
@@ -165,7 +169,7 @@ timeout 600 torchrun \
     --standalone \
     --nnodes=1 \
     --nproc_per_node=1 \
-    dinov2/train/train.py \
+    "${REPO_ROOT}/dinov2/train/train.py" \
     --config-file "${CONFIG_FILE}" \
     --output-dir "${OUTPUT_DIR}" \
     --no-resume \
