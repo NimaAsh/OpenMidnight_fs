@@ -19,7 +19,8 @@
 #SBATCH --time=0-00:30:00                 # 30 minutes
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1                 # Just 1 GPU for quick test
-#SBATCH --cpus-per-task=6                 # ~6 CPUs per GPU
+#SBATCH --cpus-per-task=12                # More CPUs for data loading
+#SBATCH --mem=64G                         # Request 64GB RAM to avoid OOM
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -174,6 +175,7 @@ timeout 600 torchrun \
     --output-dir "${OUTPUT_DIR}" \
     --no-resume \
     train.OFFICIAL_EPOCH_LENGTH=5 \
+    train.batch_size_per_gpu=8 \
     optim.epochs=1 \
     optim.early_stop=1 \
     || echo "Training test completed (may have timed out, which is OK for a test)"
