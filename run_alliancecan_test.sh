@@ -121,29 +121,16 @@ print('All imports successful!')
 # STEP 3: Test Data Loading (streaming from HuggingFace)
 # =============================================================================
 echo ""
-echo "=== Step 3: Testing data loading from HuggingFace ==="
-python -c "
-from datasets import load_dataset
-from PIL import Image
-from io import BytesIO
-import time
-
-print('Loading dataset (streaming mode)...')
-start = time.time()
-ds = load_dataset('medarc/TCGA-12K-parquet', streaming=True)['train']
-
-print('Fetching first few samples...')
-count = 0
-for sample in ds.take(5):
-    img_bytes = sample['image_bytes']
-    img = Image.open(BytesIO(img_bytes)).convert('RGB')
-    print(f'  Sample {count+1}: image size = {img.size}')
-    count += 1
-
-elapsed = time.time() - start
-print(f'Data loading test completed in {elapsed:.1f}s')
-print('HuggingFace streaming: OK')
-"
+echo "=== Step 3: Testing data loading ==="
+echo "NOTE: Trillium compute nodes don't have internet access."
+echo "      You need to download the dataset from a login node first."
+echo "      Skipping HuggingFace streaming test..."
+echo ""
+echo "To download the dataset, run this on a LOGIN NODE:"
+echo "  cd \$SCRATCH"
+echo "  source openmidnight_venv/bin/activate"
+echo "  python -c \"from datasets import load_dataset; load_dataset('medarc/TCGA-12K-parquet')\""
+echo ""
 
 # =============================================================================
 # STEP 4: Quick Training Test (just a few iterations)
