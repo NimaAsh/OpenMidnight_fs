@@ -182,7 +182,7 @@ timeout 600 torchrun \
     --output-dir "${OUTPUT_DIR}" \
     --no-resume \
     train.batch_size_per_gpu=16 \
-    train.num_workers=4 \
+    train.num_workers=1 \
     optim.epochs=1 \
     optim.warmup_epochs=0 \
     evaluation.eval_period_iterations=100 \

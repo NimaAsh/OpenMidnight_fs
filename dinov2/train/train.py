@@ -90,7 +90,8 @@ def _build_streaming_dataset(
     )["train"]
 
     # 1) shard first to avoid cross-rank duplication and wasted I/O
-    if world_size > 1:
+    #    Note: for single-GPU testing or older datasets versions, sharding may not be available
+    if world_size > 1 and hasattr(ds, 'shard'):
         ds = ds.shard(num_shards=world_size, index=global_rank)
 
     # 2) then shuffle; vary by epoch and rank
@@ -1059,9 +1060,11 @@ def do_train(cfg, model, resume=False):
                     self._reshuffle_every and (self._epoch_seen % self._reshuffle_every == 0)
                 ):
                     src = self._dataset_builder(epoch=self._epoch_seen if self._reshuffle_every else 0)
-                    worker_info = torch.utils.data.get_worker_info()
-                    if worker_info is not None and worker_info.num_workers > 1:
-                        src = src.shard(num_shards=worker_info.num_workers, index=worker_info.id)
+                    # Note: Per-worker sharding disabled for compatibility with older datasets versions
+                    # The rank-level sharding in _build_streaming_dataset handles distribution
+                    # worker_info = torch.utils.data.get_worker_info()
+                    # if worker_info is not None and worker_info.num_workers > 1:
+                    #     src = src.shard(num_shards=worker_info.num_workers, index=worker_info.id)
                     self._src_iter = iter(src)
                     self._initialized = True
 
