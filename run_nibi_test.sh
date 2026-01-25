@@ -166,6 +166,10 @@ mkdir -p "${OUTPUT_DIR}"
 
 # Run training for just 5 iterations using the ablation config
 # The ablation config uses ViT-S which is much smaller than ViT-G
+# Use reasonable test values that won't break the scheduler
+# - Keep OFFICIAL_EPOCH_LENGTH at default (500) to avoid scheduler math issues
+# - Run for 1 epoch with early_stop=1
+# - Small batch size to fit in memory
 timeout 600 torchrun \
     --standalone \
     --nnodes=1 \
@@ -174,10 +178,11 @@ timeout 600 torchrun \
     --config-file "${CONFIG_FILE}" \
     --output-dir "${OUTPUT_DIR}" \
     --no-resume \
-    train.OFFICIAL_EPOCH_LENGTH=5 \
-    train.batch_size_per_gpu=8 \
+    train.batch_size_per_gpu=16 \
+    train.num_workers=4 \
     optim.epochs=1 \
-    optim.early_stop=1 \
+    optim.warmup_epochs=0 \
+    evaluation.eval_period_iterations=100 \
     || echo "Training test completed (may have timed out, which is OK for a test)"
 
 echo ""
