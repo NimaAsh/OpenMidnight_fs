@@ -4,7 +4,7 @@
 <p align="center">Fully open-source and improved replication of Kaiko.AI's pathology foundation model <a href="https://arxiv.org/abs/2504.05186v1">Midnight</a>.</p>
 <div id="badges" align="center">
   <a href="https://sophont.med/blog/openmidnight"><img src="https://img.shields.io/badge/Blog-Training%20SOTA%20Pathology%20Foundation%20Model%20with%20%241.6k-111827?style=for-the-badge&logo=read.cv&logoColor=white" /> </a>
-  <a href="https://discord.gg/tVR4TWnRM9"><img src="https://img.shields.io/badge/Discord-Collaborate%20with%20us-5865F2?style=for-the-badge&logo=discord&logoColor=white" /></a>     
+  <a href="https://discord.gg/tVR4TWnRM9"><img src="https://img.shields.io/badge/Discord-Collaborate%20with%20us-5865F2?style=for-the-badge&logo=discord&logoColor=white" /></a>
 </div>
 <p align="center"> <a href="https://sophont.med">Sophont</a> · <a href="https://medarc.ai">MedARC</a> </p>
 
@@ -90,6 +90,74 @@ Same as training single‑node multi‑GPU, except increase `NNODES` in both `ru
 
 If during training you get HTTP Error 429, try reducing the number of workers (set in the YAML config) and lowering the DataLoader's `prefetch_factor` (defined in `dinov2/train/train.py`). This error can happen when Hugging Face is being pinged too frequently during streaming. Another solution is to [download the data locally](https://huggingface.co/datasets/medarc/TCGA-12K-parquet) and replace `medarc/TCGA-12K-parquet` in `dinov2/train/train.py` with the full path to your locally downloaded dataset folder.
 
+## Training on Alliance Canada / Compute Canada Clusters
+
+We provide specific scripts optimized for Alliance Canada (formerly Compute Canada) clusters such as Narval, Beluga, Cedar, and Graham. These scripts follow [Alliance Canada's official documentation](https://docs.alliancecan.ca/wiki/PyTorch) for PyTorch training.
+
+### First-Time Setup
+
+Alliance Canada clusters use environment modules instead of tools like `uv`. Run the setup script **once** from a login node:
+
+```bash
+chmod +x install_alliancecan.sh
+./install_alliancecan.sh
+```
+
+This will:
+- Load the required modules (Python 3.11, CUDA 12.2, cuDNN, etc.)
+- Create a virtual environment at `~/scratch/openmidnight_venv` using `virtualenv --no-download`
+- Install PyTorch from Alliance Canada's optimized wheels using `pip install --no-index`
+- Install all project dependencies and generate `requirements_alliancecan.txt`
+
+**Important**: For H100 GPUs, PyTorch >= 2.5.1 is required.
+
+### Submitting Training Jobs
+
+**Before submitting**, edit the SLURM script to set your allocation account:
+- Change `--account=def-YOURPI` to your actual allocation (e.g., `def-sponsor` or `rrg-sponsor`)
+- Optionally update `--mail-user` with your email for notifications
+
+**Single-Node Multi-GPU Training:**
+
+```bash
+sbatch run_alliancecan_1node.sh
+```
+
+**Multi-Node Distributed Training:**
+
+```bash
+sbatch run_alliancecan_multinode.sh
+```
+
+### Cluster-Specific Notes
+
+| Cluster | GPU Types | Recommended Settings |
+|---------|-----------|---------------------|
+| Narval | A100 (40GB/80GB) | Best for full ViT-G training. Use `--constraint=a100_80g` for 80GB GPUs |
+| Beluga | V100 (16GB) | May need smaller batch sizes |
+| Cedar | V100 (32GB), P100 | Good balance of availability and memory |
+| Graham | V100, T4, P100 | Mixed GPU types; specify with `--gres=gpu:v100:4` |
+
+### Activating the Environment Manually
+
+For interactive work or debugging:
+
+```bash
+source activate_alliancecan.sh
+```
+
+### Data Storage Recommendations
+
+- **Code/Checkpoints**: Store in `~/scratch/` for fast I/O (90-day purge policy)
+- **Dataset Cache**: Set `HF_HOME` to scratch (automatically configured in job scripts)
+- **Long-term Storage**: Use `~/projects/` for data you want to keep
+
+### Common Issues
+
+1. **Module conflicts**: Always start with `module purge` before loading modules
+2. **Rate limiting from HuggingFace**: Set `export HF_TOKEN=your_token` before submitting jobs
+3. **Job preemption**: Use checkpointing with `RESUME="True"` to handle interruptions
+
 # Methods / Training Recipe
 
 Below is a high‑level overview of our training recipe, with particular attention to deviations from the original DINOv2 paper. For additional context, refer to the [Midnight paper](https://arxiv.org/abs/2504.05186).
@@ -100,7 +168,7 @@ Below is a high‑level overview of our training recipe, with particular attenti
   - Heads are re‑initialized, as Meta only shared pretrained weights for their model backbone.
 
 - Objectives and heads
-  - DINO self‑distillation on CLS tokens, with 131072 prototypes and a 384‑dim bottleneck head. iBOT masked patch prediction on global crops. 
+  - DINO self‑distillation on CLS tokens, with 131072 prototypes and a 384‑dim bottleneck head. iBOT masked patch prediction on global crops.
   - DINOv2's KoLeo regularization is replaced by a KDE‑based entropy regularizer as done in the Midnight paper.
 
 - Data and augmentations
@@ -143,7 +211,7 @@ Below are the steps for running the [BACH](https://kaiko-ai.github.io/eva/main/d
 
 ```bash
 cd eva-probe # should be located in openmidnight/eva-probe
-CUDA_VISIBLE_DEVICES=0 DOWNLOAD_DATA=true eva predict_fit --config ../eval_configs/bach.yaml 
+CUDA_VISIBLE_DEVICES=0 DOWNLOAD_DATA=true eva predict_fit --config ../eval_configs/bach.yaml
 ```
 
 All eva evaluations should be run on a single GPU by setting `CUDA_VISIBLE_DEVICES=0`. We observed inconsistent and worse results when trying to evaluate using multiple GPUs.
@@ -213,13 +281,13 @@ Oquab, M., Darcet, T., Moutakanni, T., Vo, H., Szafraniec, M., Khalidov, V., ...
 
 ```
 @article{oquab2023dinov2,
-            title={DINOv2: Learning Robust Visual Features without Supervision}, 
+            title={DINOv2: Learning Robust Visual Features without Supervision},
             author={Maxime Oquab and Timothée Darcet and Théo Moutakanni and Huy Vo and Marc Szafraniec and Vasil Khalidov and Pierre Fernandez and Daniel Haziza and Francisco Massa and Alaaeldin El-Nouby and Mahmoud Assran and Nicolas Ballas and Wojciech Galuba and Russell Howes and Po-Yao Huang and Shang-Wen Li and Ishan Misra and Michael Rabbat and Vasu Sharma and Gabriel Synnaeve and Hu Xu and Hervé Jegou and Julien Mairal and Patrick Labatut and Armand Joulin and Piotr Bojanowski},
             year={2024},
             eprint={2304.07193},
             archivePrefix={arXiv},
             primaryClass={cs.CV},
-            url={https://arxiv.org/abs/2304.07193}, 
+            url={https://arxiv.org/abs/2304.07193},
 }
 ```
 
