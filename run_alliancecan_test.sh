@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Alliance Canada - Quick Test Job (15-30 minutes)
+# Alliance Canada (Trillium) - Quick Test Job (15-30 minutes)
 # =============================================================================
 # This script runs a quick test to verify everything is set up correctly.
 # It uses the small ViT-S model and runs only a few iterations.
 #
 # Submit with: sbatch run_alliancecan_test.sh
+#
+# NOTE: Trillium-specific settings:
+#   - No --mem option (memory allocated per GPU automatically: 186 GiB/GPU)
+#   - Output files must go to $SCRATCH (not /project which is read-only)
 # =============================================================================
 
 #SBATCH --job-name=openmidnight-test
@@ -14,11 +18,10 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1                 # Just 1 GPU for quick test
 #SBATCH --cpus-per-task=6                 # ~6 CPUs per GPU
-#SBATCH --mem=32G                         # Memory for test
-#SBATCH --output=slurms/%x-%j.out
-#SBATCH --error=slurms/%x-%j.err
+#SBATCH --output=%x-%j.out                # Output to current dir (will be in $SCRATCH)
+#SBATCH --error=%x-%j.err                 # Error to current dir
 #SBATCH --mail-type=BEGIN,END,FAIL        # Email when job starts, ends, or fails
-#SBATCH --mail-user=nima.ashjaee@ubc.ca   # CHANGE THIS to your email
+#SBATCH --mail-user=nima.ashjaee@ubc.ca   # Your email
 
 set -euo pipefail
 
@@ -26,7 +29,7 @@ set -euo pipefail
 # CONFIGURATION
 # =============================================================================
 CONFIG_FILE="./dinov2/configs/train/vits14_reg_ablations.yaml"
-OUTPUT_DIR="./output_test"
+OUTPUT_DIR="$SCRATCH/openmidnight_output_test"
 VENV_DIR="$SCRATCH/openmidnight_venv"
 
 # =============================================================================

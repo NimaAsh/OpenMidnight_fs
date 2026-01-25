@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Alliance Canada - Single Node Multi-GPU Training
+# Alliance Canada (Trillium) - Single Node Multi-GPU Training
 # =============================================================================
 # Submit with: sbatch run_alliancecan_1node.sh
 #
@@ -10,27 +10,22 @@
 # - Uses --no-index to install from Alliance Canada wheelhouse
 # - Sets proper environment variables for distributed training
 #
-# Common clusters and their GPU types:
-#   - Narval:  A100 (40GB/80GB)  - account format: def-<pi> or rrg-<pi>
-#   - Beluga:  V100 (16GB)       - account format: def-<pi> or rrg-<pi>
-#   - Cedar:   V100 (32GB), P100 - account format: def-<pi> or rrg-<pi>
-#   - Graham:  V100, T4, P100    - account format: def-<pi> or rrg-<pi>
+# Trillium-specific notes:
+#   - No --mem option (186 GiB per GPU, 745 GiB for whole node)
+#   - Output files must go to $SCRATCH (not /project)
+#   - H100 GPUs with 80GB memory
 # =============================================================================
 
 #SBATCH --job-name=openmidnight
 #SBATCH --account=def-ssfels              # Your PI's allocation
-#SBATCH --time=3-00:00:00                 # 3 days (max 7 days on most clusters)
+#SBATCH --time=3-00:00:00                 # 3 days (max 7 days)
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=4                 # Number of GPUs
+#SBATCH --gpus-per-node=4                 # Number of GPUs (Trillium has H100s)
 #SBATCH --cpus-per-task=32                # CPUs (~6-8 per GPU recommended)
-#SBATCH --mem=128G                        # Memory per node
-#SBATCH --output=slurms/%x-%j.out
-#SBATCH --error=slurms/%x-%j.err
+#SBATCH --output=%x-%j.out                # Output to $SCRATCH
+#SBATCH --error=%x-%j.err                 # Error to $SCRATCH
 #SBATCH --mail-type=BEGIN,END,FAIL        # Email when job starts, ends, or fails
-#SBATCH --mail-user=nima.ashjaee@ubc.ca  # CHANGE THIS to your email
-
-# Uncomment for Narval A100-80GB (if needed)
-# #SBATCH --constraint=a100_80g
+#SBATCH --mail-user=nima.ashjaee@ubc.ca   # Your email
 
 set -euo pipefail
 
@@ -38,15 +33,11 @@ set -euo pipefail
 # USER CONFIGURATION - MODIFY THESE
 # =============================================================================
 CONFIG_FILE="./dinov2/configs/train/vitg14_reg4.yaml"
-OUTPUT_DIR="./output_alliancecan"
+OUTPUT_DIR="$SCRATCH/openmidnight_output"
 RESUME="True"   # "True" to resume from checkpoint, "False" to start fresh
 
-# Choose virtualenv location:
-# Option 1: Persistent venv in scratch (survives job restarts, but slower I/O)
-VENV_DIR="${HOME}/scratch/openmidnight_venv"
-# Option 2: Ephemeral venv in SLURM_TMPDIR (faster I/O, recreated each job)
-# VENV_DIR="${SLURM_TMPDIR}/env"
-# USE_TMPDIR_VENV="true"
+# Virtualenv location (in $SCRATCH for persistence)
+VENV_DIR="$SCRATCH/openmidnight_venv"
 
 # =============================================================================
 # ENVIRONMENT SETUP
