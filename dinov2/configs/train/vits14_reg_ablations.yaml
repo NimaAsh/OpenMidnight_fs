@@ -7,17 +7,17 @@ dino:
   do_koleo: False
 ibot:
   loss_weight: 1.0
-  mask_sample_probability: 0.5 
+  mask_sample_probability: 0.5
   mask_ratio_min_max:
-    - 0.1 
-    - 0.45 
+    - 0.1
+    - 0.45
   separate_head: true
-  head_n_prototypes: 131072 
+  head_n_prototypes: 131072
 train:
   sample_list_path: /data/TCGA/sample_dataset_ablation.txt # gives paths to svs files for data loading if streaming_from_hf=False
   streaming_from_hf: true
   streaming_dataset_path: medarc/TCGA-12K-parquet
-  batch_size_per_gpu: 256 # assuming 1-gpu; if training with full 8-gpu node decrease to 32 to keep same global batch size across ablations 
+  batch_size_per_gpu: 256 # assuming 1-gpu; if training with full 8-gpu node decrease to 32 to keep same global batch size across ablations
   centering: sinkhorn_knopp
   use_pretrained: True
   OFFICIAL_EPOCH_LENGTH: 500
@@ -35,10 +35,10 @@ student:
   interpolate_offset: 0.0
 teacher:
   momentum_teacher: 0.994
-  warmup_teacher_temp: 0.04 
+  warmup_teacher_temp: 0.04
   warmup_teacher_temp_epochs: 30
 optim:
-  epochs: 2000 
+  epochs: 2000
   early_stop: 50
   weight_decay_end: 0.2
   base_lr: 8.0e-4
@@ -57,4 +57,9 @@ crops:
   local_crops_size: 98
 evaluation:
   eval_period_iterations: 2500 # save checkpoint every x iterations
-  bach_root: /data/eva-data/bach # assuming you want continuous Bach validation; change to abs path to folder containing "ICIAR2018_BACH_Challenge" 
+
+  # bach_root: /data/eva-data/bach # assuming you want continuous Bach validation; change to abs path to folder containing "ICIAR2018_BACH_Challenge"
+
+  bach_root: null  # Set to path of ICIAR2018_BACH_Challenge folder if you have it
+  breakhis_root: null  # Set to path of BreakHis dataset if you have it
+  pcam_root: null  # Set to path of PCam dataset if you have it

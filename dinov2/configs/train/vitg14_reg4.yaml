@@ -7,12 +7,12 @@ dino:
   do_koleo: False
 ibot:
   loss_weight: 1.0
-  mask_sample_probability: 0.5 
+  mask_sample_probability: 0.5
   mask_ratio_min_max:
-    - 0.1 
-    - 0.45 
+    - 0.1
+    - 0.45
   separate_head: true
-  head_n_prototypes: 131072 
+  head_n_prototypes: 131072
 train:
   sample_list_path: /data/TCGA/sample_dataset_30.txt # gives paths to svs files for data loading if streaming_from_hf=False
   streaming_from_hf: true
@@ -34,7 +34,7 @@ student:
 teacher:
   momentum_teacher: 0.994
 optim:
-  epochs: 8000 
+  epochs: 8000
   early_stop: 200 # we want to early stop at 200 epochs to replicate SOTA ckpt
   weight_decay_end: 0.2
   base_lr: 2.0e-04  # learning rate for a batch size of 1024 (swapped from 3.5e-4 to 2.0e-4)
@@ -44,6 +44,9 @@ crops:
   local_crops_size: 98
 evaluation:
   eval_period_iterations: 1250 # save checkpoint every 10 epochs
-  bach_root: /data/eva-data/bach
-  breakhis_root: /data/eva-data/breakhis
-  pcam_root: /data/eva-data/patch_camelyon
+  # bach_root: /data/eva-data/bach
+  # breakhis_root: /data/eva-data/breakhis
+  # pcam_root: /data/eva-data/patch_camelyon
+  bach_root: null  # Set to path of ICIAR2018_BACH_Challenge folder if you have it
+  breakhis_root: null  # Set to path of BreakHis dataset if you have it
+  pcam_root: null  # Set to path of PCam dataset if you have it
