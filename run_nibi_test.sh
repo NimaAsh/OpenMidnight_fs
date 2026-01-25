@@ -79,6 +79,9 @@ mkdir -p "${HF_HOME}" "${MPLCONFIGDIR}" "${FONTCONFIG_PATH}"
 # Uncomment if you have an HF token (helps avoid rate limits):
 # export HF_TOKEN="your_token_here"
 
+# Disable wandb for testing (or set your API key)
+export WANDB_MODE=disabled
+
 # =============================================================================
 # STEP 1: Basic Python/PyTorch Test
 # =============================================================================
