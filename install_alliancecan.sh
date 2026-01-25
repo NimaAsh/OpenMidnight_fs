@@ -94,14 +94,14 @@ echo ""
 echo "[6/6] Installing remaining dependencies from PyPI..."
 cd "${PROJECT_ROOT}"
 
+# Note: openslide-bin doesn't have wheels for Alliance Canada Linux
+# OpenSlide is only needed if you're processing raw SVS slide files locally
+# For streaming from HuggingFace (pre-patched images), it's not required
 pip install \
     einops \
     fvcore \
     iopath \
     omegaconf \
-    opencv-python \
-    openslide-bin \
-    openslide-python \
     submitit \
     torchmetrics \
     wandb \
