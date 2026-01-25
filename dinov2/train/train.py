@@ -73,17 +73,20 @@ def _build_streaming_dataset(
     world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
     global_rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
 
-    fragment_scan_options = pyarrow.dataset.ParquetFragmentScanOptions(
-        cache_options=pyarrow.CacheOptions(
-            prefetch_limit=fragment_prefetch_limit,
-            range_size_limit=fragment_range_size,
-        ),
-    )
+    # Note: fragment_scan_options is only supported in very recent versions of datasets
+    # For compatibility with Alliance Canada clusters, we don't use it
+    # If you have datasets>=2.22 and want to enable it, uncomment below:
+    # fragment_scan_options = pyarrow.dataset.ParquetFragmentScanOptions(
+    #     cache_options=pyarrow.CacheOptions(
+    #         prefetch_limit=fragment_prefetch_limit,
+    #         range_size_limit=fragment_range_size,
+    #     ),
+    # )
 
     ds = load_dataset(
         dataset_path,
         streaming=True,
-        fragment_scan_options=fragment_scan_options,
+        # fragment_scan_options=fragment_scan_options,  # Requires datasets>=2.22
     )["train"]
 
     # 1) shard first to avoid cross-rank duplication and wasted I/O
@@ -940,7 +943,7 @@ def do_train(cfg, model, resume=False):
         teacher_temp_schedule,
         last_layer_lr_schedule,
     ) = build_schedulers(cfg)
-    
+
     from omegaconf import OmegaConf
     if distributed.is_main_process():
         run_id_path = Path(cfg.train.output_dir) / "wandb_run_id.txt"
@@ -1030,8 +1033,8 @@ def do_train(cfg, model, resume=False):
         dataset_builder = partial(
             _build_streaming_dataset,
             dataset_path=str(cfg.train.streaming_dataset_path),
-            shuffle_buffer=50000,                   
-            base_seed=42, 
+            shuffle_buffer=50000,
+            base_seed=42,
         )
 
         def decode_and_transform(item):
@@ -1046,7 +1049,7 @@ def do_train(cfg, model, resume=False):
                 self._dataset_builder = dataset_builder
                 self._transform = transform
                 self._samples_per_epoch = samples_per_epoch
-                self._reshuffle_every = reshuffle_every  
+                self._reshuffle_every = reshuffle_every
                 self._initialized = False
                 self._epoch_seen = 0
                 self._src_iter = None
@@ -1169,17 +1172,17 @@ def do_train(cfg, model, resume=False):
             torch.cuda.synchronize()
         if not cfg.train.skip_checkpointer:
             periodic_checkpointer.step(iteration)
-        
+
         current_batch_size = data["collated_global_crops"].shape[0] / 2
         if iteration > max_iter:
             return
-        
+
         nan_mask = torch.isnan(data["collated_global_crops"])
         nan_mask2 = torch.isnan(data["collated_local_crops"])
         if nan_mask.any():
             print("found nan in input data")
             print(data[indexes])
-        
+
 
         # apply schedules
 
@@ -1226,7 +1229,7 @@ def do_train(cfg, model, resume=False):
             print(sum(loss_dict_reduced.values()))
             logger.info("NaN detected")
             print(data["indexes"])
-            
+
             for name, param in model.named_parameters():
                 if torch.isnan(param.data).any():
                     print(f"NaNs found in parameter: {name}")
@@ -1240,7 +1243,7 @@ def do_train(cfg, model, resume=False):
         metric_logger.update(last_layer_lr=last_layer_lr)
         metric_logger.update(current_batch_size=current_batch_size)
         metric_logger.update(total_loss=losses_reduced, **loss_dict_reduced)
-        
+
         if distributed.is_main_process():
             scalar_logs = {
                 "Learning Rate": lr,
@@ -1249,7 +1252,7 @@ def do_train(cfg, model, resume=False):
                 "Total Loss": losses_reduced,
             }
             wandb.log({**scalar_logs, **loss_dict_reduced}, step=iteration)
-    
+
         # Synchronize the GPU to ensure all operations are complete before measuring
         torch.cuda.synchronize()
 
