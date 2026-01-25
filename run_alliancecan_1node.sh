@@ -18,7 +18,7 @@
 # =============================================================================
 
 #SBATCH --job-name=openmidnight
-#SBATCH --account=def-YOURPI              # CHANGE THIS to your allocation
+#SBATCH --account=def-ssfels              # Your PI's allocation
 #SBATCH --time=3-00:00:00                 # 3 days (max 7 days on most clusters)
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4                 # Number of GPUs
@@ -26,8 +26,8 @@
 #SBATCH --mem=128G                        # Memory per node
 #SBATCH --output=slurms/%x-%j.out
 #SBATCH --error=slurms/%x-%j.err
-#SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=your@email.com        # CHANGE THIS
+#SBATCH --mail-type=BEGIN,END,FAIL        # Email when job starts, ends, or fails
+#SBATCH --mail-user=nima.ashjaee@ubc.ca  # CHANGE THIS to your email
 
 # Uncomment for Narval A100-80GB (if needed)
 # #SBATCH --constraint=a100_80g

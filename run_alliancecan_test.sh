@@ -9,7 +9,7 @@
 # =============================================================================
 
 #SBATCH --job-name=openmidnight-test
-#SBATCH --account=def-ssfels              # Your allocation
+#SBATCH --account=def-ssfels              # Your PI's allocation
 #SBATCH --time=0-00:30:00                 # 30 minutes (short job = faster scheduling)
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1                 # Just 1 GPU for quick test
@@ -17,6 +17,8 @@
 #SBATCH --mem=32G                         # Memory for test
 #SBATCH --output=slurms/%x-%j.out
 #SBATCH --error=slurms/%x-%j.err
+#SBATCH --mail-type=BEGIN,END,FAIL        # Email when job starts, ends, or fails
+#SBATCH --mail-user=nima.ashjaee@ubc.ca   # CHANGE THIS to your email
 
 set -euo pipefail
 
@@ -25,7 +27,7 @@ set -euo pipefail
 # =============================================================================
 CONFIG_FILE="./dinov2/configs/train/vits14_reg_ablations.yaml"
 OUTPUT_DIR="./output_test"
-VENV_DIR="${HOME}/scratch/openmidnight_venv"
+VENV_DIR="$SCRATCH/openmidnight_venv"
 
 # =============================================================================
 # ENVIRONMENT SETUP
