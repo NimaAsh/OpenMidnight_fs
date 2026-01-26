@@ -100,14 +100,20 @@ export FONTCONFIG_PATH="${SCRATCH}/.cache/fontconfig"
 mkdir -p "${MPLCONFIGDIR}" "${FONTCONFIG_PATH}"
 
 # Load secrets from .env file (WANDB_API_KEY, HF_TOKEN, etc.)
-ENV_FILE="${HOME}/.openmidnight_env"
-if [[ -f "${ENV_FILE}" ]]; then
-    echo "Loading environment from ${ENV_FILE}"
-    source "${ENV_FILE}"
+# Try SCRATCH first (more reliable on compute nodes), then HOME
+ENV_FILE_SCRATCH="${SCRATCH}/.openmidnight_env"
+ENV_FILE_HOME="${HOME}/.openmidnight_env"
+
+if [[ -f "${ENV_FILE_SCRATCH}" ]]; then
+    echo "Loading environment from ${ENV_FILE_SCRATCH}"
+    source "${ENV_FILE_SCRATCH}"
+elif [[ -f "${ENV_FILE_HOME}" ]]; then
+    echo "Loading environment from ${ENV_FILE_HOME}"
+    source "${ENV_FILE_HOME}"
 else
-    echo "WARNING: ${ENV_FILE} not found - wandb may not work"
-    echo "Create it with: echo 'WANDB_API_KEY=\"your_key\"' > ~/.openmidnight_env"
-    # Fallback to offline mode if no env file
+    echo "WARNING: No .openmidnight_env found in SCRATCH or HOME"
+    echo "Create it with: echo 'export WANDB_API_KEY=\"your_key\"' > \$SCRATCH/.openmidnight_env"
+    echo "Running wandb in offline mode - sync later with: wandb sync <run_dir>"
     export WANDB_MODE=offline
 fi
 
