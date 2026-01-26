@@ -79,7 +79,9 @@ source "${VENV_DIR}/bin/activate"
 export MASTER_ADDR=$(hostname)
 export MASTER_PORT=$(( 29500 + SLURM_JOB_ID % 1000 ))
 
-NPROC_PER_NODE=${SLURM_GPUS_PER_NODE:-8}
+# Extract number of GPUs (handle formats like "h100:8" or just "8")
+_GPUS_RAW=${SLURM_GPUS_PER_NODE:-8}
+NPROC_PER_NODE=${_GPUS_RAW##*:}  # Remove "h100:" prefix if present
 
 # Environment variables for optimal performance
 export OMP_NUM_THREADS=$((SLURM_CPUS_PER_TASK / NPROC_PER_NODE))
