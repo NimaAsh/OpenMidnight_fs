@@ -29,6 +29,7 @@ from dinov2.utils.utils import CosineScheduler
 from dinov2.train.ssl_meta_arch import SSLMetaArch
 from dinov2.models import build_model_from_cfg
 from datasets import IterableDatasetDict, load_dataset, DownloadConfig
+import datasets
 from PIL import Image, ImageOps
 import h5py
 import numpy as np
@@ -60,6 +61,21 @@ AUGMENTATION_FILE = Path(__file__).resolve().parents[1] / "data" / "augmentation
 VISION_TRANSFORMER_FILE = Path(__file__).resolve().parents[1] / "models" / "vision_transformer.py"
 SSL_META_ARCH = Path(__file__).resolve().parents[1] / "train" / "ssl_meta_arch.py"
 
+# Check datasets library version for feature compatibility
+def _parse_version(version_str):
+    """Parse version string to tuple of ints for comparison."""
+    try:
+        parts = version_str.split('+')[0].split('.')  # Handle versions like "2.14.4+computecanada"
+        return tuple(int(p) for p in parts[:3])
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+_DATASETS_VERSION = _parse_version(datasets.__version__)
+_DATASETS_HAS_SHARD = _DATASETS_VERSION >= (2, 16, 0)  # shard() added in 2.16
+_DATASETS_HAS_FRAGMENT_SCAN = _DATASETS_VERSION >= (2, 22, 0)  # fragment_scan_options in 2.22+
+
+logger.info(f"datasets version: {datasets.__version__} (shard={_DATASETS_HAS_SHARD}, fragment_scan={_DATASETS_HAS_FRAGMENT_SCAN})")
+
 def _build_streaming_dataset(
     dataset_path: str,
     *,
@@ -73,26 +89,35 @@ def _build_streaming_dataset(
     world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
     global_rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
 
-    # Note: fragment_scan_options is only supported in very recent versions of datasets
-    # For compatibility with Alliance Canada clusters, we don't use it
-    # If you have datasets>=2.22 and want to enable it, uncomment below:
-    # fragment_scan_options = pyarrow.dataset.ParquetFragmentScanOptions(
-    #     cache_options=pyarrow.CacheOptions(
-    #         prefetch_limit=fragment_prefetch_limit,
-    #         range_size_limit=fragment_range_size,
-    #     ),
-    # )
+    # Build load_dataset kwargs - add fragment_scan_options if supported
+    load_kwargs = {
+        "path": dataset_path,
+        "streaming": True,
+    }
 
-    ds = load_dataset(
-        dataset_path,
-        streaming=True,
-        # fragment_scan_options=fragment_scan_options,  # Requires datasets>=2.22
-    )["train"]
+    if _DATASETS_HAS_FRAGMENT_SCAN:
+        # Use prefetch optimization for faster I/O (datasets>=2.22)
+        try:
+            fragment_scan_options = pyarrow.dataset.ParquetFragmentScanOptions(
+                cache_options=pyarrow.CacheOptions(
+                    prefetch_limit=fragment_prefetch_limit,
+                    range_size_limit=fragment_range_size,
+                ),
+            )
+            load_kwargs["fragment_scan_options"] = fragment_scan_options
+            logger.info("Using fragment_scan_options for optimized I/O")
+        except Exception as e:
+            logger.warning(f"Failed to create fragment_scan_options: {e}")
+
+    ds = load_dataset(**load_kwargs)["train"]
 
     # 1) shard first to avoid cross-rank duplication and wasted I/O
-    #    Note: for single-GPU testing or older datasets versions, sharding may not be available
-    if world_size > 1 and hasattr(ds, 'shard'):
-        ds = ds.shard(num_shards=world_size, index=global_rank)
+    if world_size > 1:
+        if _DATASETS_HAS_SHARD and hasattr(ds, 'shard'):
+            ds = ds.shard(num_shards=world_size, index=global_rank)
+            logger.debug(f"Rank {global_rank}: sharded dataset to {world_size} shards")
+        else:
+            logger.warning(f"Sharding not available (datasets {datasets.__version__}), all ranks see full data")
 
     # 2) then shuffle; vary by epoch and rank
     seed = base_seed + epoch * 1_000_000 + global_rank * 10000
@@ -1060,11 +1085,12 @@ def do_train(cfg, model, resume=False):
                     self._reshuffle_every and (self._epoch_seen % self._reshuffle_every == 0)
                 ):
                     src = self._dataset_builder(epoch=self._epoch_seen if self._reshuffle_every else 0)
-                    # Note: Per-worker sharding disabled for compatibility with older datasets versions
-                    # The rank-level sharding in _build_streaming_dataset handles distribution
-                    # worker_info = torch.utils.data.get_worker_info()
-                    # if worker_info is not None and worker_info.num_workers > 1:
-                    #     src = src.shard(num_shards=worker_info.num_workers, index=worker_info.id)
+                    # Per-worker sharding for multi-worker DataLoader (requires datasets>=2.16)
+                    worker_info = torch.utils.data.get_worker_info()
+                    if worker_info is not None and worker_info.num_workers > 1:
+                        if _DATASETS_HAS_SHARD and hasattr(src, 'shard'):
+                            src = src.shard(num_shards=worker_info.num_workers, index=worker_info.id)
+                        # If shard not available, workers will see overlapping data (less efficient but works)
                     self._src_iter = iter(src)
                     self._initialized = True
 
