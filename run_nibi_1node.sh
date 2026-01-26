@@ -147,7 +147,20 @@ echo "GPU count: $(python -c 'import torch; print(torch.cuda.device_count())')"
 echo ""
 
 # Print GPU information
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader
+
+# Check GPU memory is actually available
+echo ""
+echo "Checking GPU memory..."
+python -c "
+import torch
+for i in range(torch.cuda.device_count()):
+    props = torch.cuda.get_device_properties(i)
+    free, total = torch.cuda.mem_get_info(i)
+    print(f'GPU {i}: {props.name}, Total: {total/1e9:.1f}GB, Free: {free/1e9:.1f}GB')
+    if free < 10e9:
+        print(f'  WARNING: GPU {i} has less than 10GB free!')
+"
 
 # =============================================================================
 # LAUNCH TRAINING
@@ -163,7 +176,8 @@ torchrun \
     "${REPO_ROOT}/dinov2/train/train.py" \
     --config-file "${REPO_ROOT}/${CONFIG_FILE}" \
     --output-dir "${OUTPUT_DIR}" \
-    ${RESUME_FLAG}
+    ${RESUME_FLAG} \
+    train.batch_size_per_gpu=32
 
 echo ""
 echo "=============================================="
