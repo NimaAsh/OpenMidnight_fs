@@ -15,10 +15,11 @@
 
 #SBATCH --job-name=openmidnight
 #SBATCH --account=def-ssfels              # Your PI's allocation
-#SBATCH --time=3-00:00:00                 # 3 days (max 7 days)
+#SBATCH --time=0-08:00:00                 # 8 hours
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=8                 # Nibi has 8x H100 per GPU node
+#SBATCH --gpus-per-node=h100:1            # Explicitly request 1x H100
 #SBATCH --cpus-per-task=112               # Full node (112 cores for GPU nodes)
+#SBATCH --mem=0                           # Request all memory on the node
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -50,8 +51,10 @@ echo "Node: ${SLURMD_NODENAME}"
 echo "Start time: $(date)"
 echo "=============================================="
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Use absolute path for sbatch compatibility
+REPO_ROOT="/project/6012563/nima5/openmidnight_proj/OpenMidnight_fs"
 cd "${REPO_ROOT}"
+echo "Working directory: $(pwd)"
 
 # Load modules
 module purge
@@ -94,7 +97,8 @@ export MPLCONFIGDIR="${SCRATCH}/.cache/matplotlib"
 export FONTCONFIG_PATH="${SCRATCH}/.cache/fontconfig"
 mkdir -p "${MPLCONFIGDIR}" "${FONTCONFIG_PATH}"
 
-# Uncomment if you have an HF token:
+# Wandb is enabled - make sure you ran 'wandb login' on login node
+# Uncomment if you have an HF token for private datasets:
 # export HF_TOKEN="your_token_here"
 
 # Set Python path
@@ -146,8 +150,8 @@ torchrun \
     --standalone \
     --nnodes=1 \
     --nproc_per_node="${NPROC_PER_NODE}" \
-    dinov2/train/train.py \
-    --config-file "${CONFIG_FILE}" \
+    "${REPO_ROOT}/dinov2/train/train.py" \
+    --config-file "${REPO_ROOT}/${CONFIG_FILE}" \
     --output-dir "${OUTPUT_DIR}" \
     ${RESUME_FLAG}
 
