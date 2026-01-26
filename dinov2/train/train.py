@@ -975,7 +975,9 @@ def do_train(cfg, model, resume=False):
         run_id_path = Path(cfg.train.output_dir) / "wandb_run_id.txt"
         if resume and run_id_path.exists():
             run_id = run_id_path.read_text().strip()
-            resume_mode = "must"
+            # Using "allow" instead of "must" - this will resume if the run exists,
+            # resume_mode = "must"
+            resume_mode = "allow"
         else:
             run_id_path.parent.mkdir(parents=True, exist_ok=True)
             run_id = wandb.util.generate_id()
