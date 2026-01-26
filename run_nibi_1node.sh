@@ -17,7 +17,7 @@
 #SBATCH --account=def-ssfels              # Your PI's allocation
 #SBATCH --time=0-08:00:00                 # 8 hours
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=h100:1            # Explicitly request 1x H100
+#SBATCH --gpus-per-node=h100:8            # Explicitly request 8x H100
 #SBATCH --cpus-per-task=112               # Full node (112 cores for GPU nodes)
 #SBATCH --mem=0                           # Request all memory on the node
 #SBATCH --output=%x-%j.out
