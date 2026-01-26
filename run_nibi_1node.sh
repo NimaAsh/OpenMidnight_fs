@@ -17,9 +17,9 @@
 #SBATCH --account=def-ssfels              # Your PI's allocation
 #SBATCH --time=0-08:00:00                 # 8 hours
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=h100:8            # Explicitly request 8x H100
-#SBATCH --cpus-per-task=112               # Full node (112 cores for GPU nodes)
-#SBATCH --mem=0                           # Request all memory on the node
+#SBATCH --gpus-per-node=h100:1            # 1x H100 for testing
+#SBATCH --cpus-per-task=14                # ~14 cores per GPU (112/8)
+#SBATCH --mem=64G                         # 64GB RAM for 1 GPU
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -99,9 +99,17 @@ export MPLCONFIGDIR="${SCRATCH}/.cache/matplotlib"
 export FONTCONFIG_PATH="${SCRATCH}/.cache/fontconfig"
 mkdir -p "${MPLCONFIGDIR}" "${FONTCONFIG_PATH}"
 
-# Wandb is enabled - make sure you ran 'wandb login' on login node
-# Uncomment if you have an HF token for private datasets:
-# export HF_TOKEN="your_token_here"
+# Load secrets from .env file (WANDB_API_KEY, HF_TOKEN, etc.)
+ENV_FILE="${HOME}/.openmidnight_env"
+if [[ -f "${ENV_FILE}" ]]; then
+    echo "Loading environment from ${ENV_FILE}"
+    source "${ENV_FILE}"
+else
+    echo "WARNING: ${ENV_FILE} not found - wandb may not work"
+    echo "Create it with: echo 'WANDB_API_KEY=\"your_key\"' > ~/.openmidnight_env"
+    # Fallback to offline mode if no env file
+    export WANDB_MODE=offline
+fi
 
 # Set Python path
 export DINOV2_RUN_SCRIPT="${REPO_ROOT}/$(basename "${BASH_SOURCE[0]}")"
