@@ -36,7 +36,7 @@ set -euo pipefail
 CONFIG_FILE="./dinov2/configs/train/vitg14_reg4.yaml"
 
 OUTPUT_DIR="$SCRATCH/openmidnight_output_vitg14"
-RESUME="True"   # "True" to resume from checkpoint, "False" to start fresh
+RESUME="False"   # "True" to resume from checkpoint, "False" to start fresh
 
 # Virtualenv location
 VENV_DIR="$SCRATCH/openmidnight_venv"
