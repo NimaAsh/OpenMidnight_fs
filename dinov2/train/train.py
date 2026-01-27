@@ -84,7 +84,7 @@ def _prefetch_dataset_info(dataset_path: str):
     """
     is_distributed = dist.is_available() and dist.is_initialized()
     rank = dist.get_rank() if is_distributed else 0
-    
+
     if rank == 0:
         logger.info(f"Rank 0: Pre-fetching dataset info for {dataset_path}...")
         try:
@@ -99,7 +99,7 @@ def _prefetch_dataset_info(dataset_path: str):
             del ds
         except Exception as e:
             logger.warning(f"Rank 0: Failed to prefetch dataset info: {e}")
-    
+
     # Barrier to ensure rank 0 finishes caching before others proceed
     if is_distributed:
         dist.barrier()
@@ -118,7 +118,7 @@ def _build_streaming_dataset(
 ):
     import time
     import random
-    
+
     # Get current rank/size at call time (safe under elastic restarts)
     world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
     global_rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
@@ -1109,7 +1109,7 @@ def do_train(cfg, model, resume=False):
     if cfg.train.streaming_from_hf:
         # Pre-fetch dataset info on rank 0 to avoid rate limiting
         _prefetch_dataset_info(str(cfg.train.streaming_dataset_path))
-        
+
         dataset_builder = partial(
             _build_streaming_dataset,
             dataset_path=str(cfg.train.streaming_dataset_path),
