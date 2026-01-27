@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Alliance Canada (Nibi) - Full ViT-G Training (Similar to run_1node.sh)
+# Alliance Canada (Nibi) - Single Node Multi-GPU Training
 # =============================================================================
-# Submit with: sbatch run_nibi_full.sh
-#
-# This script runs the FULL ViT-G/14 model training (vitg14_reg4.yaml)
-# For ablation/testing with smaller ViT-S model, use run_nibi_1node.sh
+# Submit with: sbatch run_nibi_1node.sh
 #
 # Nibi cluster specs:
 #   - 36 GPU nodes with 8x H100 SXM (80GB) each, connected via NVLink
 #   - 112 cores per GPU node, 2TB memory
 #   - Internet access on all nodes (can stream from HuggingFace)
+#   - 1TB soft quota on scratch (60-day grace period)
 #
-# ViT-G is much larger than ViT-S, so we use all 8 GPUs per node
+# For tightly coupled multi-node jobs, add: #SBATCH --switches=1
 # =============================================================================
 
-#SBATCH --job-name=openmidnight-vitg
+#SBATCH --job-name=openmidnight
 #SBATCH --account=def-ssfels              # Your PI's allocation
-#SBATCH --time=0-24:00:00                 # 24 hours (ViT-G takes longer)
+#SBATCH --time=0-08:00:00                 # 8 hours
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=h100:8            # All 8x H100 GPUs
-#SBATCH --cpus-per-task=112               # All 112 cores
-#SBATCH --mem=0                           # Request all available memory
+#SBATCH --gpus-per-node=h100:4            # 4x H100 GPUs
+#SBATCH --cpus-per-task=56                # ~14 cores per GPU (112/8) * 4
+#SBATCH --mem=256G                        # 64GB RAM per GPU * 4
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -32,11 +30,13 @@ set -euo pipefail
 # =============================================================================
 # USER CONFIGURATION - MODIFY THESE
 # =============================================================================
-# Full reproduction (large ViT-G model) - same as run_1node.sh
-CONFIG_FILE="./dinov2/configs/train/vitg14_reg4.yaml"
+# For ablation/testing (small model, faster):
+CONFIG_FILE="./dinov2/configs/train/vits14_reg_ablations.yaml"
+# For full reproduction (large model):
+# CONFIG_FILE="./dinov2/configs/train/vitg14_reg4.yaml"
 
-OUTPUT_DIR="$SCRATCH/openmidnight_output_vitg14"
-RESUME="True"   # "True" to resume from checkpoint, "False" to start fresh
+OUTPUT_DIR="$SCRATCH/openmidnight_output_4gpu"
+RESUME="False"   # "True" to resume from checkpoint, "False" to start fresh
 
 # Virtualenv location
 VENV_DIR="$SCRATCH/openmidnight_venv"
@@ -45,7 +45,7 @@ VENV_DIR="$SCRATCH/openmidnight_venv"
 # ENVIRONMENT SETUP
 # =============================================================================
 echo "=============================================="
-echo "OpenMidnight Full Training - ViT-G/14 (Nibi)"
+echo "OpenMidnight Training (Nibi)"
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Node: ${SLURMD_NODENAME}"
 echo "Start time: $(date)"
@@ -172,7 +172,7 @@ for i in range(torch.cuda.device_count()):
 # LAUNCH TRAINING
 # =============================================================================
 echo ""
-echo "Starting ViT-G/14 training..."
+echo "Starting training..."
 echo ""
 
 torchrun \
@@ -182,7 +182,8 @@ torchrun \
     "${REPO_ROOT}/dinov2/train/train.py" \
     --config-file "${REPO_ROOT}/${CONFIG_FILE}" \
     --output-dir "${OUTPUT_DIR}" \
-    ${RESUME_FLAG}
+    ${RESUME_FLAG} \
+    train.batch_size_per_gpu=32
 
 echo ""
 echo "=============================================="
