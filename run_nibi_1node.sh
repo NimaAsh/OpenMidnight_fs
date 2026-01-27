@@ -194,7 +194,8 @@ torchrun \
     "${REPO_ROOT}/dinov2/train/train.py" \
     --config-file "${REPO_ROOT}/${CONFIG_FILE}" \
     --output-dir "${OUTPUT_DIR}" \
-    ${RESUME_FLAG}
+    ${RESUME_FLAG} \
+    train.num_workers=2
 
 echo ""
 echo "=============================================="

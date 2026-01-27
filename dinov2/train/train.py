@@ -76,6 +76,37 @@ _DATASETS_HAS_FRAGMENT_SCAN = _DATASETS_VERSION >= (2, 22, 0)  # fragment_scan_o
 
 logger.info(f"datasets version: {datasets.__version__} (shard={_DATASETS_HAS_SHARD}, fragment_scan={_DATASETS_HAS_FRAGMENT_SCAN})")
 
+
+def _prefetch_dataset_info(dataset_path: str):
+    """
+    Pre-fetch dataset info on rank 0 to populate cache before other ranks access it.
+    This prevents all ranks from hitting HuggingFace API simultaneously.
+    """
+    is_distributed = dist.is_available() and dist.is_initialized()
+    rank = dist.get_rank() if is_distributed else 0
+    
+    if rank == 0:
+        logger.info(f"Rank 0: Pre-fetching dataset info for {dataset_path}...")
+        try:
+            # Load with download_config to cache metadata
+            download_config = DownloadConfig(
+                max_retries=10,
+                num_proc=1,  # Single process to avoid rate limits
+            )
+            # Just load the builder to cache metadata, don't iterate
+            ds = load_dataset(dataset_path, streaming=True, download_config=download_config)
+            logger.info(f"Rank 0: Dataset info cached successfully")
+            del ds
+        except Exception as e:
+            logger.warning(f"Rank 0: Failed to prefetch dataset info: {e}")
+    
+    # Barrier to ensure rank 0 finishes caching before others proceed
+    if is_distributed:
+        dist.barrier()
+        if rank != 0:
+            logger.info(f"Rank {rank}: Using cached dataset info")
+
+
 def _build_streaming_dataset(
     dataset_path: str,
     *,
@@ -85,6 +116,9 @@ def _build_streaming_dataset(
     fragment_range_size: int = 32 << 20,
     epoch: int = 0,
 ):
+    import time
+    import random
+    
     # Get current rank/size at call time (safe under elastic restarts)
     world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
     global_rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
@@ -109,7 +143,22 @@ def _build_streaming_dataset(
         except Exception as e:
             logger.warning(f"Failed to create fragment_scan_options: {e}")
 
-    ds = load_dataset(**load_kwargs)["train"]
+    # Retry with exponential backoff for rate limiting
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            ds = load_dataset(**load_kwargs)["train"]
+            break
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                # Rate limited - wait with exponential backoff + jitter
+                wait_time = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(f"Rate limited, attempt {attempt+1}/{max_retries}, waiting {wait_time:.1f}s...")
+                time.sleep(wait_time)
+                if attempt == max_retries - 1:
+                    raise
+            else:
+                raise
 
     # 1) shard first to avoid cross-rank duplication and wasted I/O
     if world_size > 1:
@@ -1058,6 +1107,9 @@ def do_train(cfg, model, resume=False):
     # setup data loader
 
     if cfg.train.streaming_from_hf:
+        # Pre-fetch dataset info on rank 0 to avoid rate limiting
+        _prefetch_dataset_info(str(cfg.train.streaming_dataset_path))
+        
         dataset_builder = partial(
             _build_streaming_dataset,
             dataset_path=str(cfg.train.streaming_dataset_path),
