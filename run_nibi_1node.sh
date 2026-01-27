@@ -17,9 +17,9 @@
 #SBATCH --account=def-ssfels              # Your PI's allocation
 #SBATCH --time=0-08:00:00                 # 8 hours
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=h100:1            # 1x H100 for testing
-#SBATCH --cpus-per-task=14                # ~14 cores per GPU (112/8)
-#SBATCH --mem=64G                         # 64GB RAM for 1 GPU
+#SBATCH --gpus-per-node=h100:4            # 4x H100 GPUs
+#SBATCH --cpus-per-task=56                # ~14 cores per GPU (112/8) * 4
+#SBATCH --mem=256G                        # 64GB RAM per GPU * 4
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -35,8 +35,8 @@ CONFIG_FILE="./dinov2/configs/train/vits14_reg_ablations.yaml"
 # For full reproduction (large model):
 # CONFIG_FILE="./dinov2/configs/train/vitg14_reg4.yaml"
 
-OUTPUT_DIR="$SCRATCH/openmidnight_output"
-RESUME="True"   # "True" to resume from checkpoint, "False" to start fresh
+OUTPUT_DIR="$SCRATCH/openmidnight_output_4gpu"
+RESUME="False"   # "True" to resume from checkpoint, "False" to start fresh
 
 # Virtualenv location
 VENV_DIR="$SCRATCH/openmidnight_venv"
