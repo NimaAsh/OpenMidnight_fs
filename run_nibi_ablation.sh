@@ -117,6 +117,18 @@ else
     export WANDB_MODE=offline
 fi
 
+# Verify and login to HuggingFace if token is available
+if [[ -n "${HF_TOKEN:-}" ]]; then
+    echo "HF_TOKEN found, logging into HuggingFace..."
+    # Also export as HUGGING_FACE_HUB_TOKEN for older versions
+    export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
+    # Login via CLI to store credentials
+    python -c "from huggingface_hub import login; login(token='${HF_TOKEN}', add_to_git_credential=False)"
+    echo "HuggingFace login successful"
+else
+    echo "WARNING: HF_TOKEN not set - may hit rate limits with HuggingFace"
+fi
+
 # Set Python path
 export DINOV2_RUN_SCRIPT="${REPO_ROOT}/$(basename "${BASH_SOURCE[0]}")"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
