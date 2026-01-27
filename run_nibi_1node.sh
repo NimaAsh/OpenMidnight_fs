@@ -17,7 +17,7 @@
 
 #SBATCH --job-name=openmidnight-vitg
 #SBATCH --account=def-ssfels              # Your PI's allocation
-#SBATCH --time=0-24:00:00                 # 24 hours (ViT-G takes longer)
+#SBATCH --time=4-00:00:00                 # 4 days (ViT-G takes longer)
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:8            # All 8x H100 GPUs
 #SBATCH --cpus-per-task=112               # All 112 cores
