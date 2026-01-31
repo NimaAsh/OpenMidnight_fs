@@ -73,7 +73,7 @@ echo "Start time: $(date)"
 echo "=============================================="
 
 # Use absolute path for sbatch compatibility
-REPO_ROOT="/project/6012563/nima5/openmidnight_proj/OpenMidnight_fs"
+REPO_ROOT="/project/def-ssfels/nima5/openmidnight_project/OpenMidnight_fs"
 cd "${REPO_ROOT}"
 echo "Working directory: $(pwd)"
 
