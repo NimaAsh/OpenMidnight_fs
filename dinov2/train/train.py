@@ -129,6 +129,21 @@ def _build_streaming_dataset(
         "streaming": True,
     }
 
+    # If this is a local directory, explicitly find parquet files to avoid fsspec glob issues
+    import os
+    import glob as glob_module
+    if os.path.isdir(dataset_path):
+        parquet_files = sorted(glob_module.glob(os.path.join(dataset_path, "**", "*.parquet"), recursive=True))
+        if parquet_files:
+            logger.info(f"Found {len(parquet_files)} parquet files in {dataset_path}")
+            load_kwargs = {
+                "path": "parquet",
+                "data_files": parquet_files,
+                "streaming": True,
+            }
+        else:
+            logger.warning(f"No parquet files found in {dataset_path}, falling back to default loading")
+
     if _DATASETS_HAS_FRAGMENT_SCAN:
         # Use prefetch optimization for faster I/O (datasets>=2.22)
         try:
