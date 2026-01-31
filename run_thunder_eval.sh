@@ -99,12 +99,15 @@ cd "${REPO_ROOT}"
 echo "Working directory: $(pwd)"
 
 # Load modules (only if on compute node)
+# IMPORTANT: opencv must be loaded BEFORE activating venv on Alliance Canada
 if command -v module &> /dev/null; then
     module purge
     module load StdEnv/2023
     module load python/3.11
     module load cuda/12.2
     module load cudnn/9.2.1
+    module load arrow/17.0.0
+    module load opencv/4.10.0  # Required for thunder-bench
 fi
 
 # Activate virtual environment
